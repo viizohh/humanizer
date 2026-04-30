@@ -296,12 +296,34 @@ In order to maximize the effectiveness of AI implementations, stakeholders shoul
                         label_visibility="collapsed"
                     )
 
-                    # Similarity metric
-                    st.metric(
-                        "Semantic Similarity",
-                        f"{result.semantic_similarity:.1%}",
-                        help="How similar the transformed text is to the original"
-                    )
+                    # Metrics in columns
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.metric(
+                            "Semantic Similarity",
+                            f"{result.semantic_similarity:.1%}",
+                            help="How similar the transformed text is to the original (word overlap)"
+                        )
+
+                    with col2:
+                        change_amount = 1 - result.semantic_similarity
+                        st.metric(
+                            "Change Amount",
+                            f"{change_amount:.1%}",
+                            help="How much the text was changed"
+                        )
+
+                    with col3:
+                        orig_words = len(input_text.split())
+                        trans_words = len(result.transformed_text.split())
+                        word_diff = trans_words - orig_words
+                        st.metric(
+                            "Word Count",
+                            f"{trans_words}",
+                            delta=f"{word_diff:+d}" if word_diff != 0 else "0",
+                            help="Number of words in transformed text"
+                        )
 
                     # Analysis
                     if show_analysis:

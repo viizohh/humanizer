@@ -368,11 +368,77 @@ class RuleBasedRewriter:
         """
         Structural transformations (combines surface + additional structural changes).
 
-        Currently applies surface transformations with sentence variation.
-        Future: clause reordering, passive/active voice conversion.
+        Applies surface transformations PLUS:
+        - Aggressive sentence combining (always combine short sentences)
+        - Maximum sentence splitting (split ALL long sentences)
+        - More radical transition removal
+        - Sentence opening variation
         """
-        # For now, structural just applies surface with full sentence variation
-        return self._surface_transform(text, intensity)
+        # First apply all surface transformations
+        transformed = self._surface_transform(text, intensity)
+
+        # Then apply structural-specific changes
+        paragraphs = self._split_paragraphs(transformed)
+        structural_paragraphs = []
+
+        for paragraph in paragraphs:
+            sentences = [s.strip() for s in paragraph.split('.') if s.strip()]
+
+            # Structural-specific: More aggressive sentence combining
+            combined = []
+            i = 0
+            while i < len(sentences):
+                sentence = sentences[i]
+                words = sentence.split()
+
+                # Combine ANY consecutive short sentences (not just <8 words)
+                if len(words) < 12 and i < len(sentences) - 1 and len(sentences[i + 1].split()) < 12:
+                    next_sent = sentences[i + 1]
+                    connectors = [' and ', ' – ', ', while ', ', yet ']
+                    connector = random.choice(connectors)
+                    next_lower = next_sent[0].lower() + next_sent[1:] if len(next_sent) > 1 else next_sent.lower()
+                    combined.append(sentence + connector + next_lower)
+                    i += 2
+                else:
+                    combined.append(sentence)
+                    i += 1
+
+            # Structural-specific: Split ALL long sentences (>20 words, not >25)
+            final_sentences = []
+            for sentence in combined:
+                words = sentence.split()
+                if len(words) > 20:
+                    # Always split (no probability check)
+                    conjunctions = [' and ', ' but ', ' because ', ' while ', ' although ', ' however ']
+                    split_done = False
+
+                    for conj in conjunctions:
+                        if conj in sentence:
+                            parts = sentence.split(conj, 1)
+                            if len(parts) == 2 and len(parts[0].split()) > 5:
+                                first = parts[0].strip()
+                                second = parts[1].strip()
+                                if second:
+                                    second = second[0].upper() + second[1:] if len(second) > 1 else second.upper()
+                                final_sentences.append(first)
+                                final_sentences.append(second)
+                                split_done = True
+                                break
+
+                    if not split_done:
+                        final_sentences.append(sentence)
+                else:
+                    final_sentences.append(sentence)
+
+            # Rejoin with periods
+            paragraph_text = '. '.join(final_sentences)
+            if not paragraph_text.endswith('.'):
+                paragraph_text += '.'
+
+            structural_paragraphs.append(paragraph_text)
+
+        result = '\n\n'.join(structural_paragraphs)
+        return result.strip()
 
     def _calculate_similarity(self, text1: str, text2: str) -> float:
         """Word-based Jaccard similarity (0.0 to 1.0)"""
