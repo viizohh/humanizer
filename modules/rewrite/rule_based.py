@@ -17,10 +17,14 @@ from typing import List, Tuple
 from interfaces import TextSample, TransformationResult
 import re
 import random
+import spacy
 
 
 class RuleBasedRewriter:
     """Rule-based text transformation (no GPU/neural models required)"""
+
+    # Class-level spaCy instance cache (lazy loaded on first use)
+    _nlp = None
 
     def transform(self, text: str, transformation_level: str = 'surface', intensity: str = 'medium') -> TransformationResult:
         """Transform text at specified level and intensity"""
@@ -76,6 +80,26 @@ class RuleBasedRewriter:
         """
         paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
         return paragraphs if paragraphs else [text.strip()]
+
+    def _split_sentences_spacy(self, text: str) -> List[str]:
+        """
+        Split text into sentences using spaCy's sentence segmentation.
+
+        Handles abbreviations (Dr., Mr., etc.) and decimals (3.14) correctly.
+        Uses lazy loading with class-level cache for performance.
+
+        Returns list of sentence strings (non-empty, stripped).
+        """
+        # Lazy load spaCy model (class-level cache to avoid repeated loading)
+        if RuleBasedRewriter._nlp is None:
+            RuleBasedRewriter._nlp = spacy.load('en_core_web_sm')
+
+        # Use spaCy sentence segmentation
+        doc = RuleBasedRewriter._nlp(text)
+        sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+
+        # Fallback to original text if no sentences detected
+        return sentences if sentences else [text.strip()]
 
     def _smart_transitions(self, sentence: str, intensity_factor: float, sentence_idx: int) -> str:
         """
@@ -228,8 +252,8 @@ class RuleBasedRewriter:
         transformed_paragraphs = []
 
         for para_idx, paragraph in enumerate(paragraphs):
-            # Split into sentences
-            sentences = [s.strip() for s in paragraph.split('.') if s.strip()]
+            # Split into sentences using spaCy (handles abbreviations and decimals)
+            sentences = self._split_sentences_spacy(paragraph)
             transformed_sentences = []
 
             for sent_idx, sentence in enumerate(sentences):
@@ -363,9 +387,167 @@ class RuleBasedRewriter:
         result = '\n\n'.join(cleaned_paragraphs)
         return result.strip()
 
+    def _structural_transform_independent(self, text: str, intensity: str = 'medium') -> str:
+        """
+        INDEPENDENT structural transformations (does NOT call surface transform).
+
+        Key differences from surface transform:
+        - Different vocabulary replacements (uses "And", "Besides", "What's more" vs surface's "Also", "Plus")
+        - Always combines sentences <12 words (no probability)
+        - Always splits sentences >20 words (no probability)
+        - Own intensity factor calculation
+        - Unique contraction logic
+        - Sentence reordering at 30% probability
+        """
+        intensity_map = {
+            'minimal': 0.2,
+            'light': 0.4,
+            'medium': 0.6,
+            'heavy': 0.8,
+            'aggressive': 1.0
+        }
+        intensity_factor = intensity_map.get(intensity, 0.6)
+
+        paragraphs = self._split_paragraphs(text)
+        transformed_paragraphs = []
+
+        for paragraph in paragraphs:
+            # Use spaCy sentence splitting
+            sentences = self._split_sentences_spacy(paragraph)
+            transformed_sentences = []
+
+            for sent_idx, sentence in enumerate(sentences):
+                modified = sentence
+
+                # Structural-specific pattern replacements (DIFFERENT from surface)
+                if intensity_factor >= 0.4:
+                    # Use different transition words than surface transform
+                    structural_patterns = [
+                        (r'\bFurthermore,', 'And'),
+                        (r'\bAdditionally,', 'Besides,'),
+                        (r'\bMoreover,', "What's more,"),
+                        (r'\bHowever,', 'Yet'),
+                        (r'\bNevertheless,', 'Even so,'),
+                        (r'\bTherefore,', 'Thus'),
+                        (r'\bFor example,', 'Take,'),
+                        (r'\bFor instance,', 'Consider,'),
+                        (r'\bIn order to\b', 'so as to'),
+                        (r'\bas well as\b', 'plus'),
+                        (r'\bdue to the fact that\b', 'since'),
+                        (r'\bin the event that\b', 'when'),
+                    ]
+                    for pattern, replacement in structural_patterns:
+                        modified = re.sub(pattern, replacement, modified, flags=re.IGNORECASE)
+
+                # Structural-specific vocabulary (different from surface)
+                if intensity_factor >= 0.4:
+                    structural_vocab = {
+                        'utilize': 'employ', 'utilizes': 'employs', 'utilized': 'employed',
+                        'facilitate': 'enable', 'facilitates': 'enables', 'facilitated': 'enabled',
+                        'numerous': 'multiple', 'various': 'several',
+                        'obtain': 'acquire', 'obtains': 'acquires', 'obtained': 'acquired',
+                        'purchase': 'procure', 'purchases': 'procures', 'purchased': 'procured',
+                        'demonstrate': 'exhibit', 'demonstrates': 'exhibits', 'demonstrated': 'exhibited',
+                        'investigate': 'examine', 'approximately': 'roughly', 'sufficient': 'adequate',
+                        'attempt': 'endeavor', 'attempts': 'endeavors', 'attempted': 'endeavored',
+                    }
+                    for formal, structural in structural_vocab.items():
+                        modified = re.sub(r'\b' + formal + r'\b', structural, modified, flags=re.IGNORECASE)
+
+                # Structural-specific contractions (different pattern)
+                if intensity_factor >= 0.6:
+                    # Focus on modal contractions
+                    structural_contractions = [
+                        (' will not ', " won't "), (' would not ', " wouldn't "),
+                        (' should not ', " shouldn't "), (' could not ', " couldn't "),
+                        (' cannot ', " can't "), (' did not ', " didn't "),
+                    ]
+                    for full, contracted in structural_contractions:
+                        modified = modified.replace(full, contracted)
+
+                transformed_sentences.append(modified)
+
+            # ALWAYS combine short sentences (no probability check)
+            combined = []
+            i = 0
+            while i < len(transformed_sentences):
+                sentence = transformed_sentences[i]
+                words = sentence.split()
+
+                # Always combine consecutive sentences <12 words
+                if (len(words) < 12 and
+                    i < len(transformed_sentences) - 1 and
+                    len(transformed_sentences[i + 1].split()) < 12):
+
+                    next_sent = transformed_sentences[i + 1]
+                    # Use different connectors than surface
+                    connectors = [', and ', ' – also ', ', plus ']
+                    connector = random.choice(connectors)
+
+                    next_lower = next_sent[0].lower() + next_sent[1:] if len(next_sent) > 1 else next_sent.lower()
+                    combined.append(sentence + connector + next_lower)
+                    i += 2
+                else:
+                    combined.append(sentence)
+                    i += 1
+
+            # ALWAYS split long sentences (no probability check)
+            final_sentences = []
+            for sentence in combined:
+                words = sentence.split()
+                if len(words) > 20:
+                    # Always split (no probability check)
+                    conjunctions = [' and ', ' but ', ' because ', ' while ', ' although ', ' however ']
+                    split_done = False
+
+                    for conj in conjunctions:
+                        if conj in sentence:
+                            parts = sentence.split(conj, 1)
+                            if len(parts) == 2 and len(parts[0].split()) > 5:
+                                first = parts[0].strip()
+                                second = parts[1].strip()
+                                if second:
+                                    second = second[0].upper() + second[1:] if len(second) > 1 else second.upper()
+                                final_sentences.append(first)
+                                final_sentences.append(second)
+                                split_done = True
+                                break
+
+                    if not split_done:
+                        final_sentences.append(sentence)
+                else:
+                    final_sentences.append(sentence)
+
+            # Sentence reordering (humanization layer) - keep 30% probability as required
+            if len(final_sentences) > 2 and random.random() < 0.3:
+                swap_idx = random.randint(1, len(final_sentences) - 2)
+                final_sentences[swap_idx], final_sentences[swap_idx + 1] = \
+                    final_sentences[swap_idx + 1], final_sentences[swap_idx]
+
+            # Rejoin with periods
+            paragraph_text = '. '.join(final_sentences)
+            if not paragraph_text.endswith('.'):
+                paragraph_text += '.'
+
+            transformed_paragraphs.append(paragraph_text)
+
+        result = '\n\n'.join(transformed_paragraphs)
+        return result.strip()
+
     def _structural_transform(self, text: str, intensity: str = 'medium') -> str:
         """
-        Structural transformations (combines surface + additional structural changes).
+        Structural transformations - fully independent implementation.
+
+        Calls _structural_transform_independent which does NOT use surface transform.
+        """
+        return self._structural_transform_independent(text, intensity)
+
+    def _structural_transform_old(self, text: str, intensity: str = 'medium') -> str:
+        """
+        OLD VERSION: Structural transformations (combines surface + additional structural changes).
+
+        THIS VERSION DEPRECATED - kept for reference only.
+        Uses _surface_transform first, causing surface/structural similarity.
 
         Applies surface transformations PLUS:
         - Aggressive sentence combining (always combine short sentences)
@@ -381,7 +563,8 @@ class RuleBasedRewriter:
         structural_paragraphs = []
 
         for paragraph in paragraphs:
-            sentences = [s.strip() for s in paragraph.split('.') if s.strip()]
+            # Use spaCy sentence splitting
+            sentences = self._split_sentences_spacy(paragraph)
 
             # Structural-specific: More aggressive sentence combining
             combined = []
