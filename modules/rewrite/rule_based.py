@@ -33,8 +33,8 @@ class RuleBasedRewriter:
                 metadata={'method': 'rule_based', 'intensity': intensity, 'error': 'empty_input'}
             )
 
-        # Set seed based on hash of text for deterministic but varied results
-        random.seed(hash(text) % (2**32))
+        # REMOVED deterministic seeding - each run now produces varied output
+        # This allows same input to be transformed differently each time
 
         try:
             if transformation_level == 'surface':
@@ -86,10 +86,9 @@ class RuleBasedRewriter:
         - 30% chance: remove transition entirely
         - 20% chance: keep but lowercase
 
-        Uses sentence_idx to vary random behavior across sentences.
+        Non-deterministic - produces varied output each run.
         """
-        # Seed based on sentence index for varied behavior per sentence
-        random.seed(hash(sentence) + sentence_idx)
+        # No seeding - allow true randomness for varied outputs
 
         # Transition words with their casual alternatives
         transitions = [
@@ -429,6 +428,14 @@ class RuleBasedRewriter:
                         final_sentences.append(sentence)
                 else:
                     final_sentences.append(sentence)
+
+            # Structural-specific: Sentence reordering (humanization layer)
+            # Randomly swap adjacent sentences to break predictable flow
+            if len(final_sentences) > 2 and random.random() < 0.3:  # 30% chance
+                # Pick a random pair to swap (not first sentence)
+                swap_idx = random.randint(1, len(final_sentences) - 2)
+                final_sentences[swap_idx], final_sentences[swap_idx + 1] = \
+                    final_sentences[swap_idx + 1], final_sentences[swap_idx]
 
             # Rejoin with periods
             paragraph_text = '. '.join(final_sentences)
